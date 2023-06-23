@@ -10,6 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::{future, Future, FutureExt, Stream, TryFutureExt};
 use http::StatusCode;
+#[cfg(feature = "carddav")]
+use vcard4::Vcard;
 
 use crate::davpath::DavPath;
 
@@ -110,6 +112,23 @@ pub struct DavProp {
     pub namespace: Option<String>,
     /// Value of the property as raw XML.
     pub xml: Option<Vec<u8>>,
+}
+
+/// Webdav access control list according to RFC3744
+#[derive(Debug, Clone, Default)]
+pub struct DavAccessControl {
+    /// Client can write
+    pub write: bool,
+    /// Client can read
+    pub read: bool,
+    /// Client can delete
+    pub unbind: bool,
+    /// Client can read ACL
+    pub read_acl: bool,
+    /// Client can write ACL
+    pub write_acl: bool,
+    /// Client can read current user privilege set
+    pub read_current_user_privilege_set: bool,
 }
 
 /// Future returned by almost all of the DavFileSystem methods.
@@ -278,6 +297,23 @@ pub trait DavFileSystem: Sync + Send + BoxCloneFs {
     fn get_quota(&self) -> FsFuture<(u64, Option<u64>)> {
         notimplemented_fut!("get_quota`")
     }
+
+    /// Get authenticated user principal of this filesystem
+    #[allow(unused_variables)]
+    fn user_principal_url<'a>(&'a self, path: &'a DavPath) -> FsFuture<Vec<u8>> {
+        notimplemented_fut!("user_principal`")
+    }
+
+    /// Patch path to a new path
+    #[allow(unused_variables)]
+    fn patch_path<'a>(&'a self, path: &'a DavPath) -> FsFuture<DavPath> {
+        notimplemented_fut!("patch_path`")
+    }
+
+    /// Access control list can read current user privilege set
+    fn get_acl<'a>(&'a self, path: &'a DavPath) -> FsFuture<DavAccessControl> {
+        Box::pin(future::ok(DavAccessControl::default()))
+    }
 }
 
 // BoxClone trait.
@@ -406,6 +442,22 @@ pub trait DavMetaData: Debug + BoxCloneMd + Send + Sync {
     // Is empty file
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    #[cfg(feature = "carddav")]
+    /// Is Carddav Addressbook
+    fn is_addrbook(&self) -> FsResult<bool> {
+        notimplemented!("is_addrbook")
+    }
+    #[cfg(feature = "carddav")]
+    /// Carddav display name
+    fn displayname(&self) -> FsResult<String> {
+        notimplemented!("displayname")
+    }
+    #[cfg(feature = "carddav")]
+    /// Carddav vcard properties
+    fn vcard_data(&self) -> FsResult<Vcard> {
+        notimplemented!("vcard_data")
     }
 }
 

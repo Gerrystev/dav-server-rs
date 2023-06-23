@@ -424,7 +424,11 @@ impl DavPathRef {
         let d = name.rsplitn(2, |&c| c == b'.').collect::<Vec<&[u8]>>();
         if d.len() > 1 {
             if let Ok(ext) = std::str::from_utf8(d[0]) {
+                if ext == "vcf" {
+                    return "text/vcard"
+                }
                 if let Some(t) = mime_guess::from_ext(ext).first_raw() {
+                    // let t =     t.replace("x-", "").as_str();
                     return t;
                 }
             }

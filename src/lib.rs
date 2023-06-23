@@ -142,6 +142,8 @@ mod handle_mkcol;
 mod handle_options;
 mod handle_props;
 mod handle_put;
+#[cfg(feature = "carddav")]
+mod handle_report;
 #[cfg(any(docsrs, feature = "localfs"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "localfs")))]
 mod localfs_macos;

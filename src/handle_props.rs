@@ -29,6 +29,8 @@ use crate::{DavInner, DavResult};
 
 const NS_APACHE_URI: &str = "http://apache.org/dav/props/";
 const NS_DAV_URI: &str = "DAV:";
+#[cfg(feature = "carddav")]
+const NS_CARDDAV_URI: &str = "urn:ietf:params:xml:ns:carddav";
 const NS_MS_URI: &str = "urn:schemas-microsoft-com:";
 
 // list returned by PROPFIND <propname/>.
@@ -81,6 +83,12 @@ const MS_ALLPROP_STR: &[&str] = &[
     "Z:Win32LastModifiedTime",
 ];
 
+#[cfg(feature = "carddav")]
+const UNIMPLEMENTED_CARDDAV_PROP: &[&str] = &[
+    // "current-user-principal",
+    // "current-user-privilege-set",
+];
+
 lazy_static! {
     static ref ALLPROP: Vec<Element> = init_staticprop(ALLPROP_STR);
     static ref MS_ALLPROP: Vec<Element> = init_staticprop(MS_ALLPROP_STR);
@@ -95,7 +103,7 @@ struct StatusElement {
     element: Element,
 }
 
-struct PropWriter {
+pub (crate) struct PropWriter {
     emitter: Emitter,
     tx: Option<Sender>,
     name: String,
@@ -121,6 +129,8 @@ fn init_staticprop(p: &[&str]) -> Vec<Element> {
             Some("D") => Some(NS_DAV_URI.to_string()),
             Some("A") => Some(NS_APACHE_URI.to_string()),
             Some("Z") => Some(NS_MS_URI.to_string()),
+            #[cfg(feature = "carddav")]
+            Some("card") => Some(NS_CARDDAV_URI.to_string()),
             _ => None,
         };
         v.push(e);
@@ -164,6 +174,7 @@ impl DavInner {
 
         let mut root = None;
         if !xmldata.is_empty() {
+            trace!("{}", String::from_utf8(xmldata.to_vec()).unwrap());
             root = match Element::parse(Cursor::new(xmldata)) {
                 Ok(t) => {
                     if t.name == "propfind" && t.namespace.as_deref() == Some("DAV:") {
@@ -215,10 +226,73 @@ impl DavInner {
             Ok(())
         }));
 
+        // let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+        //     <d:multistatus
+        //         xmlns:cal="urn:ietf:params:xml:ns:caldav"
+        //         xmlns:card="urn:ietf:params:xml:ns:carddav"
+        //         xmlns:cs="http://calendarserver.org/ns/"
+        //         xmlns:d="DAV:"
+        //         xmlns:ical="http://apple.com/ns/ical/">
+        //         <d:response>
+        //             <d:href>/carddav/v1/principals/garyforjunk106@gmail.com/lists/default/</d:href>
+        //             <d:propstat>
+        //                 <d:status>HTTP/1.1 200 OK</d:status>
+        //                 <d:prop>
+        //                     <d:displayname>Address Book</d:displayname>
+        //                     <d:current-user-privilege-set>
+        //                         <d:privilege>
+        //                             <d:read/>
+        //                         </d:privilege>
+        //                         <d:privilege>
+        //                             <d:read-acl/>
+        //                         </d:privilege>
+        //                         <d:privilege>
+        //                             <d:read-current-user-privilege-set/>
+        //                         </d:privilege>
+        //                         <d:privilege>
+        //                             <d:unlock/>
+        //                         </d:privilege>
+        //                         <d:privilege>
+        //                             <d:write/>
+        //                         </d:privilege>
+        //                         <d:privilege>
+        //                             <d:write-acl/>
+        //                         </d:privilege>
+        //                     </d:current-user-privilege-set>
+        //                     <d:current-user-principal>
+        //                         <d:href>/carddav/v1/principals/garyforjunk106@gmail.com</d:href>
+        //                     </d:current-user-principal>
+        //                     <d:resourcetype>
+        //                         <d:collection/>
+        //                         <card:addressbook/>
+        //                     </d:resourcetype>
+        //                 </d:prop>
+        //             </d:propstat>
+        //         </d:response>
+        //     </d:multistatus>"#;
+
+        // let body = r#"<?xml version="1.0" encoding="utf-8"?>
+        //     <D:multistatus xmlns:D="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
+        //         <D:response>
+        //             <D:href>/carddav/gerry%40vizirlabs.com</D:href>
+        //             <D:propstat>
+        //                 <D:prop>
+        //                     <resourcetype xmlns="DAV:">
+        //                         <D:displayname>aFFsfsdasfsdfsd</D:displayname>
+        //                         <D:collection></D:collection>
+        //                         <card:addressbook></card:addressbook>
+        //                     </resourcetype>
+        //                 </D:prop>
+        //                 <D:status>HTTP/1.1 200 OK</D:status>
+        //             </D:propstat>
+        //         </D:response>
+        //     </D:multistatus>"#;
+        // *res.body_mut() = Body::from(body);
+
         Ok(res)
     }
 
-    fn propfind_directory<'a>(
+    pub (crate) fn propfind_directory<'a>(
         &'a self,
         path: &'a DavPath,
         depth: davheaders::Depth,
@@ -306,6 +380,22 @@ impl DavInner {
                             return StatusCode::CONFLICT;
                         }
                         StatusCode::FORBIDDEN
+                    }
+                    _ => StatusCode::FORBIDDEN,
+                }
+            }
+            #[cfg(feature = "carddav")]
+            Some(NS_CARDDAV_URI) => {
+                match prop.name.as_str() {
+                    "address-data" => {
+                        if prop.get_text().is_none() || prop.has_child_elems() {
+                            return StatusCode::CONFLICT;
+                        }
+                        if can_deadprop {
+                            StatusCode::CONTINUE
+                        } else {
+                            StatusCode::FORBIDDEN
+                        }
                     }
                     _ => StatusCode::FORBIDDEN,
                 }
@@ -531,7 +621,11 @@ impl PropWriter {
 
         // check the prop namespaces to see what namespaces
         // we need to put in the preamble.
-        let mut ev = XmlWEvent::start_element("D:multistatus").ns("D", NS_DAV_URI);
+        let mut ev = XmlWEvent::start_element("D:multistatus")
+            .ns("D", NS_DAV_URI);
+        #[cfg(feature = "carddav")]
+        let mut ev = ev.ns("card", NS_CARDDAV_URI);
+
         if name != "propertyupdate" {
             let mut a = false;
             let mut m = false;
@@ -651,6 +745,77 @@ impl PropWriter {
             Some(NS_DAV_URI) => {
                 pfx = "D";
                 match prop.name.as_str() {
+                    "current-user-privilege-set" => {
+                        let acl = self.fs.get_acl(path).await?;
+                        
+                        let mut elem = prop.clone();
+
+                        if acl.read {
+                            let mut eprivilege = Element::new2("D:privilege");
+                            let read = Element::new2("D:read");
+                            eprivilege.children.push(XMLNode::Element(read));
+                            elem.children.push(XMLNode::Element(eprivilege));
+                        }
+
+                        if acl.write {
+                            let mut eprivilege = Element::new2("D:privilege");
+                            let write = Element::new2("D:write");
+                            eprivilege.children.push(XMLNode::Element(write));
+                            elem.children.push(XMLNode::Element(eprivilege));
+                        }
+
+                        if acl.unbind {
+                            let mut eprivilege = Element::new2("D:privilege");
+                            let unbind = Element::new2("D:unbind");
+                            eprivilege.children.push(XMLNode::Element(unbind));
+                            elem.children.push(XMLNode::Element(eprivilege));
+                        }
+
+                        if acl.read_acl {
+                            let mut eprivilege = Element::new2("D:privilege");
+                            let read = Element::new2("D:read-acl");
+                            eprivilege.children.push(XMLNode::Element(read));
+                            elem.children.push(XMLNode::Element(eprivilege));
+                        }
+
+                        if acl.write_acl {
+                            let mut eprivilege = Element::new2("D:privilege");
+                            let read = Element::new2("D:write-acl");
+                            eprivilege.children.push(XMLNode::Element(read));
+                            elem.children.push(XMLNode::Element(eprivilege));
+                        }
+
+                        if acl.read_current_user_privilege_set {
+                            let mut eprivilege = Element::new2("D:privilege");
+                            let read_current_user_privilege_set = Element::new2("D:read-current-user-privilege-set");
+                            eprivilege.children.push(XMLNode::Element(read_current_user_privilege_set));
+                            elem.children.push(XMLNode::Element(eprivilege));
+                        }
+
+                        return Ok(StatusElement {
+                            status: StatusCode::OK,
+                            element: elem,
+                        });
+                    }
+                    "current-user-principal" => {
+                        // Get authed user principal
+                        let mut elem = prop.clone();
+                        
+                        let principal = self.fs.user_principal_url(path).await?;
+                        let principal = String::from_utf8(principal)
+                            .map_err(|_| FsError::GeneralFailure)?;
+
+                        // let mut current_principal = Element::new2("D:current-user-principal");
+                        let href = Element::new2("D:href").text(principal);
+
+                        // current_principal.children.push(XMLNode::Element(href));
+                        elem.children.push(XMLNode::Element(href));
+
+                        return Ok(StatusElement {
+                            status: StatusCode::OK,
+                            element: elem,
+                        });
+                    }
                     "creationdate" => {
                         if let Ok(time) = meta.created() {
                             let tm = systemtime_to_rfc3339(time);
@@ -668,9 +833,22 @@ impl PropWriter {
                             return self.build_elem(docontent, pfx, prop, tm);
                         }
                     }
-                    "displayname" | "getcontentlanguage" => {
+                    "getcontentlanguage" => {
                         try_deadprop = true;
                     }
+                    #[cfg(not(feature = "carddav"))]
+                    "displayname" => {
+                        try_deadprop = true;
+                    }
+                    #[cfg(feature = "carddav")]
+                    "displayname" => {
+                        // if meta.is_addrbook().is_ok() && meta.is_addrbook()? {
+                        //     return self.build_elem(docontent, pfx, prop,  meta.displayname()?);
+                        // } else {
+                        //     try_deadprop = true;z
+                        // }
+                        return self.build_elem(docontent, pfx, prop,  meta.displayname()?);
+                    }                    
                     "getetag" => {
                         if let Some(etag) = meta.etag() {
                             return self.build_elem(docontent, pfx, prop, etag);
@@ -682,11 +860,16 @@ impl PropWriter {
                         }
                     }
                     "getcontenttype" => {
-                        return if meta.is_dir() {
-                            self.build_elem(docontent, pfx, prop, "httpd/unix-directory")
-                        } else {
-                            self.build_elem(docontent, pfx, prop, path.get_mime_type_str())
-                        };
+                        #[cfg(feature = "carddav")]
+                        if meta.is_addrbook()? {
+                            return self.build_elem(docontent, pfx, prop, "application/octet-stream")
+                        }
+
+                        if meta.is_dir() {
+                            return self.build_elem(docontent, pfx, prop, "httpd/unix-directory")
+                        } 
+                        
+                        return self.build_elem(docontent, pfx, prop, path.get_mime_type_str())
                     }
                     "getlastmodified" => {
                         if let Ok(time) = meta.modified() {
@@ -696,10 +879,26 @@ impl PropWriter {
                     }
                     "resourcetype" => {
                         let mut elem = prop.clone();
-                        if meta.is_dir() && docontent {
+
+                        #[cfg(feature = "carddav")]
+                        if meta.is_addrbook()? && docontent {
+                            let dir = Element::new2("D:collection");
+                            elem.children.push(XMLNode::Element(dir));
+
+                            let addr_book = Element::new2("card:addressbook");
+                            elem.children.push(XMLNode::Element(addr_book));
+
+                            return Ok(StatusElement {
+                                status: StatusCode::OK,
+                                element: elem,
+                            });
+                        }
+
+                        if (meta.is_addrbook().is_err() || !meta.is_addrbook()?) && meta.is_dir() && docontent {
                             let dir = Element::new2("D:collection");
                             elem.children.push(XMLNode::Element(dir));
                         }
+
                         return Ok(StatusElement {
                             status: StatusCode::OK,
                             element: elem,
@@ -737,6 +936,19 @@ impl PropWriter {
                         }
                     }
                     _ => {}
+                }
+            }
+            #[cfg(feature = "carddav")]
+            Some(NS_CARDDAV_URI) => {
+                pfx = "card";
+                if prop.name.as_str() == "address-data" {
+                    let vcard = meta.vcard_data()?.to_string();
+                    let mut elem = prop.clone();
+                    elem.children.push(XMLNode::Text(vcard));
+                    return Ok(StatusElement {
+                        status: StatusCode::OK,
+                        element: elem,
+                    });
                 }
             }
             Some(NS_APACHE_URI) => {
@@ -844,6 +1056,11 @@ impl PropWriter {
         let do_content = self.name != "propname";
         let mut qc = self.q_cache;
         for p in &self.props {
+            #[cfg(feature = "carddav")]
+            if UNIMPLEMENTED_CARDDAV_PROP.contains(&p.name.as_str()) {
+                // Skip unimplemented prop
+                continue;
+            }
             let res = self
                 .build_prop(p, path, &*meta, &mut qc, do_content)
                 .await?;

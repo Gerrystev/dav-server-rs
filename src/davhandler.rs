@@ -524,7 +524,8 @@ impl DavInner {
             | DavMethod::Patch
             | DavMethod::PropFind
             | DavMethod::PropPatch
-            | DavMethod::Lock => {}
+            | DavMethod::Lock
+            | DavMethod::Report => {}
             _ => {
                 if !body_data.is_empty() {
                     return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE.into());
@@ -545,6 +546,8 @@ impl DavInner {
             DavMethod::Head | DavMethod::Get => self.handle_get(&req).await,
             DavMethod::Copy | DavMethod::Move => self.handle_copymove(&req, method).await,
             DavMethod::Put | DavMethod::Patch => self.handle_put(&req, body_strm.unwrap()).await,
+            #[cfg(feature = "carddav")]
+            DavMethod::Report => self.handle_report(&req, &body_data).await
         };
         res
     }
